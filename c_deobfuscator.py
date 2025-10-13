@@ -26,13 +26,12 @@ class CDeobfuscator:
         
         # 変換表から識別子のマッピングを抽出
         # 形式: "  old_name                       -> new_name"
-        # コメントの場合は日本語や記号も含むため、より柔軟なパターンを使用
-        pattern = r'^\s+(.+?)\s+->\s+([A-Za-z0-9_]+)\s*$'  # 修正: 正規表現パターンを正しく閉じる
+        pattern = r'^\s+(.+?)\s+->\s+([A-Za-z0-9_]+)\s*$'
         
         for line in content.split('\n'):
             match = re.match(pattern, line)
             if match:
-                old_name = match.group(1).strip()  # 前後の空白を削除
+                old_name = match.group(1).strip()
                 new_name = match.group(2)
                 # 逆マッピング: 新しい名前 -> 元の名前
                 self.conversion_map[new_name] = old_name
@@ -47,7 +46,6 @@ class CDeobfuscator:
         result_code = self.obfuscated_code
         
         # 長い名前から順に変換（部分一致を避けるため）
-        # 例: m10 と m1 がある場合、m10 を先に変換する
         sorted_names = sorted(self.conversion_map.keys(), 
                             key=lambda x: (len(x), x), 
                             reverse=True)
@@ -113,7 +111,7 @@ class CDeobfuscator:
         for new_name, old_name in sorted(self.conversion_map.items()):
             if new_name.startswith('D'):
                 categories['マクロ名'].append((new_name, old_name))
-            elif new_name.startswith('e') and not new_name.startswith('ex'):
+            elif new_name.startswith('e') and len(new_name) > 1 and new_name[1].isdigit():
                 categories['列挙型名'].append((new_name, old_name))
             elif new_name.startswith('t'):
                 categories['構造体名'].append((new_name, old_name))
@@ -123,7 +121,7 @@ class CDeobfuscator:
                 categories['関数名'].append((new_name, old_name))
             elif new_name.startswith('v'):
                 categories['変数名'].append((new_name, old_name))
-            elif new_name.startswith('c') and not new_name.startswith('cx'):
+            elif new_name.startswith('c') and len(new_name) > 1 and new_name[1:].isdigit():
                 categories['コメント'].append((new_name, old_name))
             elif new_name.startswith('m'):
                 categories['メンバ名'].append((new_name, old_name))

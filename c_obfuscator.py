@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-C言語ソースコードの識別子を系統的に変換するプログラム
+C言語ソースコードの識別子を系統的に変換するプログラム（完全修正版）
 """
 
 import re
@@ -150,7 +150,8 @@ class CObfuscator:
         self.c_keywords = {
             # 型
             'int', 'char', 'short', 'long', 'float', 'double', 'void',
-            'signed', 'unsigned',
+            'signed', 'unsigned', 'uint8_t', 'uint16_t', 'uint32_t', 'uint64_t',
+            'int8_t', 'int16_t', 'int32_t', 'int64_t', 'size_t',
             # 制御構文
             'if', 'else', 'switch', 'case', 'default', 'break', 'continue',
             'for', 'while', 'do', 'goto', 'return',
@@ -172,66 +173,59 @@ class CObfuscator:
             'exit', 'NULL'
         }
         
-    def remove_comments_and_strings(self, code):
-        """コメントと文字列リテラルを一時的に除去し、コメントを変換"""
-        # コメントと文字列を保護するための辞書
+    def remove_comments_strings_and_directives(self, code):
+        """コメント、文字列リテラル、プリプロセッサディレクティブを保護"""
         self.protected = {}
         counter = 0
         
-        def replace_string_with_placeholder(match):
+        def replace_with_placeholder(match, transformed_content=None):
             nonlocal counter
-            placeholder = f"__PROTECTED_STR_{counter}__"
-            self.protected[placeholder] = match.group(0)
+            placeholder = f"__PROTECTED_{counter}__"
+            self.protected[placeholder] = transformed_content if transformed_content else match.group(0)
             counter += 1
             return placeholder
         
-        def replace_comment_with_placeholder(match):
-            nonlocal counter
+        # 1. プリプロセッサディレクティブを保護（#includeなど、#defineは除く）
+        def protect_include(match):
+            return replace_with_placeholder(match)
+        
+        code = re.sub(r'#include\s+[<"][^>"]+[>"]', protect_include, code)
+        code = re.sub(r'#(?:if|ifdef|ifndef|elif|else|endif|pragma|error|warning)\b[^\n]*', protect_include, code)
+        
+        # 2. 文字列リテラルを保護
+        code = re.sub(r'"(?:[^"\\]|\\.)*"', lambda m: replace_with_placeholder(m), code)
+        code = re.sub(r"'(?:[^'\\]|\\.)*'", lambda m: replace_with_placeholder(m), code)
+        
+        # 3. コメントを変換して保護
+        def replace_comment(match):
             original_comment = match.group(0)
             
-            # コメントの種類を判定
             if original_comment.startswith('//'):
-                # 単一行コメント
-                comment_prefix = '//'
                 comment_content = original_comment[2:].strip()
             else:
-                # 複数行コメント
-                comment_prefix = '/*'
-                comment_suffix = '*/'
                 comment_content = original_comment[2:-2].strip()
             
-            # コメント内容を変換マップに追加
             if comment_content:
                 comment_id = f"c{self.counters['comment']}"
                 self.identifiers['comment'][comment_content] = comment_id
                 self.counters['comment'] += 1
                 
-                # 変換後のコメントを作成
                 if original_comment.startswith('//'):
                     transformed_comment = f"// {comment_id}"
                 else:
                     transformed_comment = f"/* {comment_id} */"
             else:
-                # 空のコメントはそのまま
                 transformed_comment = original_comment
             
-            placeholder = f"__PROTECTED_COMMENT_{counter}__"
-            self.protected[placeholder] = transformed_comment
-            counter += 1
-            return placeholder
+            return replace_with_placeholder(match, transformed_comment)
         
-        # 文字列リテラルを保護
-        code = re.sub(r'"(?:[^"\\]|\\.)*"', replace_string_with_placeholder, code)
-        code = re.sub(r"'(?:[^'\\]|\\.)*'", replace_string_with_placeholder, code)
-        
-        # コメントを変換して保護
-        code = re.sub(r'//[^\n]*', replace_comment_with_placeholder, code)
-        code = re.sub(r'/\*.*?\*/', replace_comment_with_placeholder, code, flags=re.DOTALL)
+        code = re.sub(r'//[^\n]*', replace_comment, code)
+        code = re.sub(r'/\*.*?\*/', replace_comment, code, flags=re.DOTALL)
         
         return code
     
     def restore_protected(self, code):
-        """保護された文字列とコメントを復元"""
+        """保護された部分を復元"""
         for placeholder, original in self.protected.items():
             code = code.replace(placeholder, original)
         return code
@@ -242,7 +236,8 @@ class CObfuscator:
     
     def extract_identifiers(self, code):
         """識別子を抽出して分類"""
-        # マクロ定義を抽出
+        
+        # 1. マクロ定義を抽出
         for match in re.finditer(r'#define\s+([A-Za-z_][A-Za-z0-9_]*)', code):
             name = match.group(1)
             if name not in self.identifiers['macro'] and not self.is_reserved_word(name):
@@ -250,71 +245,38 @@ class CObfuscator:
                 self.counters['macro'] += 1
                 self.used_identifiers.add(name)
         
-        # 列挙型定義を抽出
-        for match in re.finditer(r'enum\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{', code):
+        # 2. 列挙型定義を抽出
+        for match in re.finditer(r'enum\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|;)', code):
             name = match.group(1)
             if name not in self.identifiers['enum'] and not self.is_reserved_word(name):
                 self.identifiers['enum'][name] = f"e{self.counters['enum']}"
                 self.counters['enum'] += 1
                 self.used_identifiers.add(name)
         
-        # 構造体定義を抽出
-        for match in re.finditer(r'struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{', code):
+        # 3. 構造体定義を抽出
+        for match in re.finditer(r'struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|;|\*|[^\w])', code):
             name = match.group(1)
             if name not in self.identifiers['struct'] and not self.is_reserved_word(name):
                 self.identifiers['struct'][name] = f"t{self.counters['struct']}"
                 self.counters['struct'] += 1
                 self.used_identifiers.add(name)
         
-        # 共用体定義を抽出
-        for match in re.finditer(r'union\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{', code):
+        # 4. 共用体定義を抽出
+        for match in re.finditer(r'union\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|;|\*|[^\w])', code):
             name = match.group(1)
             if name not in self.identifiers['union'] and not self.is_reserved_word(name):
                 self.identifiers['union'][name] = f"u{self.counters['union']}"
                 self.counters['union'] += 1
                 self.used_identifiers.add(name)
         
-        # メンバ名を抽出（構造体・共用体内）
-        struct_union_blocks = re.finditer(
-            r'(?:struct|union)\s+[A-Za-z_][A-Za-z0-9_]*\s*\{([^}]+)\}',
-            code, re.DOTALL
-        )
-        for block_match in struct_union_blocks:
-            block = block_match.group(1)
-            # メンバ変数を抽出（ビットフィールドにも対応）
-            for match in re.finditer(
-                r'(?:unsigned\s+)?(?:int|char|short|long|float|double|struct\s+\w+|enum\s+\w+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\d+|;|\[)',
-                block
-            ):
-                name = match.group(1)
-                if name not in self.identifiers['member'] and not self.is_reserved_word(name):
-                    self.identifiers['member'][name] = f"m{self.counters['member']}"
-                    self.counters['member'] += 1
-                    self.used_identifiers.add(name)
-        
-        # 列挙型のメンバ（列挙子）を抽出
-        enum_blocks = re.finditer(
-            r'enum\s+[A-Za-z_][A-Za-z0-9_]*\s*\{([^}]+)\}',
-            code, re.DOTALL
-        )
-        for block_match in enum_blocks:
-            block = block_match.group(1)
-            # 列挙子を抽出
-            for match in re.finditer(
-                r'([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*[^,}]+)?[,}]',
-                block
-            ):
-                name = match.group(1)
-                if name not in self.identifiers['member'] and not self.is_reserved_word(name):
-                    self.identifiers['member'][name] = f"m{self.counters['member']}"
-                    self.counters['member'] += 1
-                    self.used_identifiers.add(name)
-        
-        # 関数定義・宣言を抽出
+        # 5. 関数定義・宣言を抽出
         for match in re.finditer(
-            r'(?:^|\n)\s*(?:static\s+)?(?:inline\s+)?(?:extern\s+)?'
-            r'(?:void|int|char|short|long|float|double|unsigned|struct\s+\w+|union\s+\w+|enum\s+\w+)\s+'
-            r'(?:\*\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:\{|;)',
+            r'(?:^|[\n;])\s*(?:static\s+|inline\s+|extern\s+)*'
+            r'(?:const\s+|volatile\s+)*'
+            r'(?:void|int|char|short|long|float|double|unsigned|signed|'
+            r'uint\d+_t|int\d+_t|size_t|'
+            r'struct\s+\w+|union\s+\w+|enum\s+\w+)\s+'
+            r'(?:\*\s*)*([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:[;{])',
             code, re.MULTILINE
         ):
             name = match.group(1)
@@ -323,45 +285,120 @@ class CObfuscator:
                 self.counters['function'] += 1
                 self.used_identifiers.add(name)
         
-        # 変数定義を抽出（グローバル変数とローカル変数）
+        # 6. メンバアクセス（-> と .）で使用されている識別子を最優先で抽出
+        # これらは必ずメンバ名として扱う
+        for match in re.finditer(r'(?:->|\.)\s*([A-Za-z_][A-Za-z0-9_]*)', code):
+            name = match.group(1)
+            if name not in self.identifiers['member'] and not self.is_reserved_word(name):
+                self.identifiers['member'][name] = f"m{self.counters['member']}"
+                self.counters['member'] += 1
+                self.used_identifiers.add(name)
+        
+        # 7. 列挙型のメンバ（列挙子）を抽出
+        enum_blocks = re.finditer(
+            r'enum\s+(?:[A-Za-z_][A-Za-z0-9_]*)?\s*\{([^}]+)\}',
+            code, re.DOTALL
+        )
+        for block_match in enum_blocks:
+            block = block_match.group(1)
+            for match in re.finditer(r'([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*[^,}]+)?(?:,|})', block):
+                name = match.group(1)
+                if name not in self.identifiers['member'] and not self.is_reserved_word(name):
+                    self.identifiers['member'][name] = f"m{self.counters['member']}"
+                    self.counters['member'] += 1
+                    self.used_identifiers.add(name)
+        
+        # 8. 構造体・共用体内のメンバ定義を抽出
+        struct_union_blocks = re.finditer(
+            r'(?:struct|union)\s+(?:[A-Za-z_][A-Za-z0-9_]*)?\s*\{([^}]+)\}',
+            code, re.DOTALL
+        )
+        for block_match in struct_union_blocks:
+            block = block_match.group(1)
+            for match in re.finditer(
+                r'(?:unsigned\s+|const\s+|volatile\s+|static\s+)*'
+                r'(?:int|char|short|long|float|double|void|uint\d+_t|int\d+_t|size_t|struct\s+\w+|union\s+\w+|enum\s+\w+)\s+'
+                r'(?:\*\s*)*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\d+|;|\[)',
+                block
+            ):
+                name = match.group(1)
+                if name not in self.identifiers['member'] and not self.is_reserved_word(name):
+                    self.identifiers['member'][name] = f"m{self.counters['member']}"
+                    self.counters['member'] += 1
+                    self.used_identifiers.add(name)
+        
+        # 9. 変数定義を抽出（メンバアクセスで使用されている名前は除外）
+        variable_patterns = [
+            # 関数引数（最優先）
+            r'\(\s*(?:const\s+|volatile\s+)*'
+            r'(?:unsigned\s+|signed\s+)*'
+            r'(?:int|char|short|long|float|double|void|'
+            r'uint\d+_t|int\d+_t|size_t|'
+            r'struct\s+\w+|union\s+\w+|enum\s+\w+)\s+'
+            r'(?:\*\s*)*([A-Za-z_][A-Za-z0-9_]*)\s*[,)]',
+            
+            # グローバル・ローカル変数
+            r'(?:^|[\n;{])\s*(?:static\s+|extern\s+|const\s+|volatile\s+)*'
+            r'(?:unsigned\s+|signed\s+)*'
+            r'(?:int|char|short|long|float|double|void|'
+            r'uint\d+_t|int\d+_t|size_t|'
+            r'struct\s+\w+|union\s+\w+|enum\s+\w+)\s+'
+            r'(?:\*\s*)*([A-Za-z_][A-Za-z0-9_]*)\s*(?:[=;\[,])',
+        ]
+        
+        for pattern in variable_patterns:
+            for match in re.finditer(pattern, code, re.MULTILINE):
+                name = match.group(1)
+                if (name not in self.identifiers['function'] and
+                    name not in self.identifiers['struct'] and
+                    name not in self.identifiers['union'] and
+                    name not in self.identifiers['enum'] and
+                    name not in self.identifiers['variable'] and
+                    name not in self.identifiers['macro'] and
+                    name not in self.identifiers['member'] and  # メンバでない
+                    not self.is_reserved_word(name)):
+                    self.identifiers['variable'][name] = f"v{self.counters['variable']}"
+                    self.counters['variable'] += 1
+                    self.used_identifiers.add(name)
+        
+        # 10. forループ内の変数
         for match in re.finditer(
-            r'(?:^|\n|;|\{)\s*(?:static\s+)?(?:extern\s+)?'
-            r'(?:unsigned\s+)?(?:int|char|short|long|float|double|struct\s+\w+|union\s+\w+|enum\s+\w+)\s+'
-            r'(?:\*\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[)',
-            code, re.MULTILINE
+            r'for\s*\(\s*(?:int|uint\d+_t|size_t)\s+([A-Za-z_][A-Za-z0-9_]*)',
+            code
         ):
             name = match.group(1)
-            # 関数名や構造体名、列挙型名、予約語でないことを確認
-            if (name not in self.identifiers['function'] and
-                name not in self.identifiers['struct'] and
-                name not in self.identifiers['union'] and
-                name not in self.identifiers['enum'] and
-                name not in self.identifiers['variable'] and
+            if (name not in self.identifiers['variable'] and
+                name not in self.identifiers['member'] and
                 not self.is_reserved_word(name)):
                 self.identifiers['variable'][name] = f"v{self.counters['variable']}"
                 self.counters['variable'] += 1
                 self.used_identifiers.add(name)
     
     def find_unused_identifiers(self, code):
-        """未使用の識別子を検出し、変換マップに追加（オプション）"""
-        # すべての識別子候補を抽出
+        """未使用の識別子を検出"""
         all_identifiers = set(re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', code))
         
-        # 未使用のメンバ名を検出
         unused_counter = 1
-        for identifier in all_identifiers:
+        for identifier in sorted(all_identifiers):
             if identifier not in self.used_identifiers and not self.is_reserved_word(identifier):
-                self.identifiers['member'][identifier] = f"mx{unused_counter}"
-                unused_counter += 1
+                # プレースホルダーは除外
+                if not identifier.startswith('__PROTECTED_'):
+                    self.identifiers['member'][identifier] = f"mx{unused_counter}"
+                    unused_counter += 1
     
     def apply_transformations(self, code):
         """変換を適用"""
-        # 変換の優先順位: マクロ → 列挙型 → 構造体/共用体 → 関数 → メンバ → 変数
-        # コメントは既に変換済みなので除外
+        # 長い名前から順に変換（部分一致を避けるため）
+        all_items = []
         for category in ['macro', 'enum', 'struct', 'union', 'function', 'member', 'variable']:
             for old_name, new_name in self.identifiers[category].items():
-                # 単語境界を使用して正確に置換
-                code = re.sub(r'\b' + re.escape(old_name) + r'\b', new_name, code)
+                all_items.append((old_name, new_name, len(old_name)))
+        
+        # 長さの降順でソート
+        all_items.sort(key=lambda x: x[2], reverse=True)
+        
+        for old_name, new_name, _ in all_items:
+            code = re.sub(r'\b' + re.escape(old_name) + r'\b', new_name, code)
         
         return code
     
@@ -394,14 +431,14 @@ class CObfuscator:
     
     def obfuscate(self):
         """難読化を実行"""
-        # コメントと文字列を保護
-        protected_code = self.remove_comments_and_strings(self.source_code)
+        # コメント、文字列、ディレクティブを保護
+        protected_code = self.remove_comments_strings_and_directives(self.source_code)
         
         # 識別子を抽出
         self.extract_identifiers(protected_code)
         
-        # 未使用の識別子を検出（オプション - デフォルトでは無効化）
-        # self.find_unused_identifiers(protected_code)
+        # 未使用の識別子を検出
+        self.find_unused_identifiers(protected_code)
         
         # 変換を適用
         transformed_code = self.apply_transformations(protected_code)
@@ -418,7 +455,6 @@ class CObfuscator:
 def main():
     """メイン関数"""
     if len(sys.argv) > 1:
-        # ファイルから読み込み
         filename = sys.argv[1]
         try:
             with open(filename, 'r', encoding='utf-8') as f:
@@ -428,7 +464,6 @@ def main():
             print(f"エラー: ファイル '{filename}' を読み込めません: {e}")
             sys.exit(1)
     else:
-        # サンプルコードを使用
         source_code = SAMPLE_C_CODE
         print("入力ファイル: サンプルコード")
     
