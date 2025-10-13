@@ -26,12 +26,13 @@ class CDeobfuscator:
         
         # 変換表から識別子のマッピングを抽出
         # 形式: "  old_name                       -> new_name"
-        pattern = r'^\s+([A-Za-z_][A-Za-z0-9_]*)\s+->\s+([A-Za-z0-9_]+)\s*$'
+        # コメントの場合は日本語や記号も含むため、より柔軟なパターンを使用
+        pattern = r'^\s+(.+?)\s+->\s+([A-Za-z0-9_]+)\s*$'  # 修正: 正規表現パターンを正しく閉じる
         
         for line in content.split('\n'):
             match = re.match(pattern, line)
             if match:
-                old_name = match.group(1)
+                old_name = match.group(1).strip()  # 前後の空白を削除
                 new_name = match.group(2)
                 # 逆マッピング: 新しい名前 -> 元の名前
                 self.conversion_map[new_name] = old_name
@@ -51,11 +52,42 @@ class CDeobfuscator:
                             key=lambda x: (len(x), x), 
                             reverse=True)
         
+        # コメント識別子と通常の識別子を分離
+        comment_ids = []
+        normal_ids = []
+        
         for new_name in sorted_names:
+            # c1, c2, c3... はコメント識別子
+            if new_name.startswith('c') and len(new_name) > 1 and new_name[1:].isdigit():
+                comment_ids.append(new_name)
+            else:
+                normal_ids.append(new_name)
+        
+        # まず通常の識別子を変換
+        for new_name in normal_ids:
             old_name = self.conversion_map[new_name]
             # 単語境界を使用して正確に置換
             result_code = re.sub(r'\b' + re.escape(new_name) + r'\b', 
                                old_name, result_code)
+        
+        # 次にコメント識別子を変換（特別処理）
+        for new_name in comment_ids:
+            old_name = self.conversion_map[new_name]
+            
+            # 単一行コメント: // c1 または // c15
+            result_code = re.sub(
+                r'//\s*' + re.escape(new_name) + r'(?=\s*$|\s*\n)',
+                f'// {old_name}',
+                result_code,
+                flags=re.MULTILINE
+            )
+            
+            # 複数行コメント: /* c1 */ または /* c35 */
+            result_code = re.sub(
+                r'/\*\s*' + re.escape(new_name) + r'\s*\*/',
+                f'/* {old_name} */',
+                result_code
+            )
         
         return result_code
     
@@ -74,7 +106,8 @@ class CDeobfuscator:
             '共用体名': [],
             '関数名': [],
             '変数名': [],
-            'メンバ名': []
+            'メンバ名': [],
+            'コメント': []
         }
         
         for new_name, old_name in sorted(self.conversion_map.items()):
@@ -90,6 +123,8 @@ class CDeobfuscator:
                 categories['関数名'].append((new_name, old_name))
             elif new_name.startswith('v'):
                 categories['変数名'].append((new_name, old_name))
+            elif new_name.startswith('c') and not new_name.startswith('cx'):
+                categories['コメント'].append((new_name, old_name))
             elif new_name.startswith('m'):
                 categories['メンバ名'].append((new_name, old_name))
         
