@@ -3,6 +3,7 @@
 """
 C言語ソースコードの識別子を系統的に変換するプログラム（改良版）
 プレフィックス「Ut」を追加して誤変換を防ぐ
+同じコメントの重複を正しく処理するよう修正
 """
 
 import re
@@ -148,6 +149,10 @@ class CObfuscator:
         }
         self.used_identifiers = set()
         
+        # コメントIDとコンテンツのマッピング（重複対応）
+        self.comment_id_to_content = {}  # comment_id -> comment_content
+        self.comment_mappings = []  # [(comment_id, comment_content), ...]の順序付きリスト
+        
         # 変換パターンの定義（プレフィックス付き）
         self.patterns = {
             'macro': f'{prefix}D',
@@ -222,8 +227,17 @@ class CObfuscator:
                 comment_content = original_comment[2:-2].strip()
             
             if comment_content:
+                # 常に新しいIDを生成（同じコメントでも別のIDを付与）
                 comment_id = f"{self.patterns['comment']}{self.counters['comment']}"
+                
+                # コメントIDとコンテンツのマッピングを保存
+                self.comment_id_to_content[comment_id] = comment_content
+                self.comment_mappings.append((comment_id, comment_content))
+                
+                # 後方互換性のため、最後に出現したものをidentifiersに保存
+                # （ただし、generate_conversion_tableでは別の方法を使う）
                 self.identifiers['comment'][comment_content] = comment_id
+                
                 self.counters['comment'] += 1
                 
                 if original_comment.startswith('//'):
@@ -407,7 +421,7 @@ class CObfuscator:
         return code
     
     def generate_conversion_table(self):
-        """変換表を生成"""
+        """変換表を生成（重複するコメントも含めてすべて表示）"""
         table = []
         table.append("=" * 60)
         table.append(f"識別子変換表 (プレフィックス: {self.prefix})")
@@ -421,7 +435,6 @@ class CObfuscator:
             ('関数名', 'function'),
             ('変数名', 'variable'),
             ('メンバ名', 'member'),
-            ('コメント', 'comment')
         ]
         
         total_count = 0
@@ -430,6 +443,18 @@ class CObfuscator:
                 table.append(f"\n【{category_name}】")
                 for old_name, new_name in sorted(self.identifiers[category_key].items()):
                     table.append(f"  {old_name:30s} -> {new_name}")
+                    total_count += 1
+        
+        # コメントは別扱い（重複も含めてすべて表示）
+        if self.comment_mappings:
+            table.append(f"\n【コメント】")
+            # 重複を考慮して、すべてのコメントマッピングを表示
+            seen_pairs = set()
+            for comment_id, comment_content in self.comment_mappings:
+                pair = (comment_content, comment_id)
+                if pair not in seen_pairs:
+                    table.append(f"  {comment_content:30s} -> {comment_id}")
+                    seen_pairs.add(pair)
                     total_count += 1
         
         table.append(f"\n合計: {total_count} 件の識別子")
