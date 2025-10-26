@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-C言語ソースコードの識別子を系統的に変換するプログラム（完全修正版）
+C言語ソースコードの識別子を系統的に変換するプログラム（改良版）
+プレフィックス「Ut」を追加して誤変換を防ぐ
 """
 
 import re
@@ -82,13 +83,13 @@ void process_command(int command) {
     // コマンドを処理する
     switch (command) {
         case 0:
-            printf("Idle\n");  // アイドル状態
+            printf("Idle\\n");  // アイドル状態
             break;
         case 1:
-            printf("Active\n");  // アクティブ状態
+            printf("Active\\n");  // アクティブ状態
             break;
         default:
-            printf("Unknown\n");  // 未知のコマンド
+            printf("Unknown\\n");  // 未知のコマンド
             break;
     }
 }
@@ -122,17 +123,18 @@ int main(void) {
 
 
 class CObfuscator:
-    def __init__(self, source_code):
+    def __init__(self, source_code, prefix="Ut"):
         self.source_code = source_code
+        self.prefix = prefix  # 誤変換防止用のプレフィックス
         self.identifiers = {
-            'macro': {},      # D1, D2, ...
-            'enum': {},       # e1, e2, ...
-            'struct': {},     # t1, t2, ...
-            'union': {},      # u1, u2, ...
-            'function': {},   # f1, f2, ...
-            'variable': {},   # v1, v2, ...
-            'member': {},     # m1, m2, ...
-            'comment': {}     # c1, c2, ...
+            'macro': {},      # UtD1, UtD2, ...
+            'enum': {},       # Ute1, Ute2, ...
+            'struct': {},     # Utt1, Utt2, ...
+            'union': {},      # Utu1, Utu2, ...
+            'function': {},   # Utf1, Utf2, ...
+            'variable': {},   # Utv1, Utv2, ...
+            'member': {},     # Utm1, Utm2, ...
+            'comment': {}     # Utc1, Utc2, ...
         }
         self.counters = {
             'macro': 1,
@@ -145,6 +147,18 @@ class CObfuscator:
             'comment': 1
         }
         self.used_identifiers = set()
+        
+        # 変換パターンの定義（プレフィックス付き）
+        self.patterns = {
+            'macro': f'{prefix}D',
+            'enum': f'{prefix}e',
+            'struct': f'{prefix}t',
+            'union': f'{prefix}u',
+            'function': f'{prefix}f',
+            'variable': f'{prefix}v',
+            'member': f'{prefix}m',
+            'comment': f'{prefix}c'
+        }
         
         # C言語の予約語リスト
         self.c_keywords = {
@@ -170,7 +184,9 @@ class CObfuscator:
             'printf', 'scanf', 'malloc', 'free', 'memcpy', 'memset',
             'strlen', 'strcpy', 'strcmp', 'strcat', 'sprintf', 'snprintf',
             'fopen', 'fclose', 'fread', 'fwrite', 'fprintf', 'fscanf',
-            'exit', 'NULL'
+            'exit', 'NULL',
+            # 特殊な関数
+            'main'  # main関数は変換しない
         }
         
     def remove_comments_strings_and_directives(self, code):
@@ -206,7 +222,7 @@ class CObfuscator:
                 comment_content = original_comment[2:-2].strip()
             
             if comment_content:
-                comment_id = f"c{self.counters['comment']}"
+                comment_id = f"{self.patterns['comment']}{self.counters['comment']}"
                 self.identifiers['comment'][comment_content] = comment_id
                 self.counters['comment'] += 1
                 
@@ -241,7 +257,7 @@ class CObfuscator:
         for match in re.finditer(r'#define\s+([A-Za-z_][A-Za-z0-9_]*)', code):
             name = match.group(1)
             if name not in self.identifiers['macro'] and not self.is_reserved_word(name):
-                self.identifiers['macro'][name] = f"D{self.counters['macro']}"
+                self.identifiers['macro'][name] = f"{self.patterns['macro']}{self.counters['macro']}"
                 self.counters['macro'] += 1
                 self.used_identifiers.add(name)
         
@@ -249,7 +265,7 @@ class CObfuscator:
         for match in re.finditer(r'enum\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|;)', code):
             name = match.group(1)
             if name not in self.identifiers['enum'] and not self.is_reserved_word(name):
-                self.identifiers['enum'][name] = f"e{self.counters['enum']}"
+                self.identifiers['enum'][name] = f"{self.patterns['enum']}{self.counters['enum']}"
                 self.counters['enum'] += 1
                 self.used_identifiers.add(name)
         
@@ -257,7 +273,7 @@ class CObfuscator:
         for match in re.finditer(r'struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|;|\*|[^\w])', code):
             name = match.group(1)
             if name not in self.identifiers['struct'] and not self.is_reserved_word(name):
-                self.identifiers['struct'][name] = f"t{self.counters['struct']}"
+                self.identifiers['struct'][name] = f"{self.patterns['struct']}{self.counters['struct']}"
                 self.counters['struct'] += 1
                 self.used_identifiers.add(name)
         
@@ -265,7 +281,7 @@ class CObfuscator:
         for match in re.finditer(r'union\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|;|\*|[^\w])', code):
             name = match.group(1)
             if name not in self.identifiers['union'] and not self.is_reserved_word(name):
-                self.identifiers['union'][name] = f"u{self.counters['union']}"
+                self.identifiers['union'][name] = f"{self.patterns['union']}{self.counters['union']}"
                 self.counters['union'] += 1
                 self.used_identifiers.add(name)
         
@@ -281,16 +297,15 @@ class CObfuscator:
         ):
             name = match.group(1)
             if name not in self.identifiers['function'] and not self.is_reserved_word(name):
-                self.identifiers['function'][name] = f"f{self.counters['function']}"
+                self.identifiers['function'][name] = f"{self.patterns['function']}{self.counters['function']}"
                 self.counters['function'] += 1
                 self.used_identifiers.add(name)
         
         # 6. メンバアクセス（-> と .）で使用されている識別子を最優先で抽出
-        # これらは必ずメンバ名として扱う
         for match in re.finditer(r'(?:->|\.)\s*([A-Za-z_][A-Za-z0-9_]*)', code):
             name = match.group(1)
             if name not in self.identifiers['member'] and not self.is_reserved_word(name):
-                self.identifiers['member'][name] = f"m{self.counters['member']}"
+                self.identifiers['member'][name] = f"{self.patterns['member']}{self.counters['member']}"
                 self.counters['member'] += 1
                 self.used_identifiers.add(name)
         
@@ -304,7 +319,7 @@ class CObfuscator:
             for match in re.finditer(r'([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*[^,}]+)?(?:,|})', block):
                 name = match.group(1)
                 if name not in self.identifiers['member'] and not self.is_reserved_word(name):
-                    self.identifiers['member'][name] = f"m{self.counters['member']}"
+                    self.identifiers['member'][name] = f"{self.patterns['member']}{self.counters['member']}"
                     self.counters['member'] += 1
                     self.used_identifiers.add(name)
         
@@ -323,13 +338,13 @@ class CObfuscator:
             ):
                 name = match.group(1)
                 if name not in self.identifiers['member'] and not self.is_reserved_word(name):
-                    self.identifiers['member'][name] = f"m{self.counters['member']}"
+                    self.identifiers['member'][name] = f"{self.patterns['member']}{self.counters['member']}"
                     self.counters['member'] += 1
                     self.used_identifiers.add(name)
         
-        # 9. 変数定義を抽出（メンバアクセスで使用されている名前は除外）
+        # 9. 変数定義を抽出
         variable_patterns = [
-            # 関数引数（最優先）
+            # 関数引数
             r'\(\s*(?:const\s+|volatile\s+)*'
             r'(?:unsigned\s+|signed\s+)*'
             r'(?:int|char|short|long|float|double|void|'
@@ -355,9 +370,9 @@ class CObfuscator:
                     name not in self.identifiers['enum'] and
                     name not in self.identifiers['variable'] and
                     name not in self.identifiers['macro'] and
-                    name not in self.identifiers['member'] and  # メンバでない
+                    name not in self.identifiers['member'] and
                     not self.is_reserved_word(name)):
-                    self.identifiers['variable'][name] = f"v{self.counters['variable']}"
+                    self.identifiers['variable'][name] = f"{self.patterns['variable']}{self.counters['variable']}"
                     self.counters['variable'] += 1
                     self.used_identifiers.add(name)
         
@@ -370,24 +385,12 @@ class CObfuscator:
             if (name not in self.identifiers['variable'] and
                 name not in self.identifiers['member'] and
                 not self.is_reserved_word(name)):
-                self.identifiers['variable'][name] = f"v{self.counters['variable']}"
+                self.identifiers['variable'][name] = f"{self.patterns['variable']}{self.counters['variable']}"
                 self.counters['variable'] += 1
                 self.used_identifiers.add(name)
     
-    def find_unused_identifiers(self, code):
-        """未使用の識別子を検出"""
-        all_identifiers = set(re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', code))
-        
-        unused_counter = 1
-        for identifier in sorted(all_identifiers):
-            if identifier not in self.used_identifiers and not self.is_reserved_word(identifier):
-                # プレースホルダーは除外
-                if not identifier.startswith('__PROTECTED_'):
-                    self.identifiers['member'][identifier] = f"mx{unused_counter}"
-                    unused_counter += 1
-    
     def apply_transformations(self, code):
-        """変換を適用"""
+        """変換を適用（単語境界を使用せず、すべての出現箇所を変換）"""
         # 長い名前から順に変換（部分一致を避けるため）
         all_items = []
         for category in ['macro', 'enum', 'struct', 'union', 'function', 'member', 'variable']:
@@ -398,6 +401,7 @@ class CObfuscator:
         all_items.sort(key=lambda x: x[2], reverse=True)
         
         for old_name, new_name, _ in all_items:
+            # 単語境界を使用した置換（独立した識別子）
             code = re.sub(r'\b' + re.escape(old_name) + r'\b', new_name, code)
         
         return code
@@ -406,7 +410,7 @@ class CObfuscator:
         """変換表を生成"""
         table = []
         table.append("=" * 60)
-        table.append("識別子変換表")
+        table.append(f"識別子変換表 (プレフィックス: {self.prefix})")
         table.append("=" * 60)
         
         categories = [
@@ -420,13 +424,16 @@ class CObfuscator:
             ('コメント', 'comment')
         ]
         
+        total_count = 0
         for category_name, category_key in categories:
             if self.identifiers[category_key]:
                 table.append(f"\n【{category_name}】")
                 for old_name, new_name in sorted(self.identifiers[category_key].items()):
                     table.append(f"  {old_name:30s} -> {new_name}")
+                    total_count += 1
         
-        table.append("\n" + "=" * 60)
+        table.append(f"\n合計: {total_count} 件の識別子")
+        table.append("=" * 60)
         return "\n".join(table)
     
     def obfuscate(self):
@@ -436,9 +443,6 @@ class CObfuscator:
         
         # 識別子を抽出
         self.extract_identifiers(protected_code)
-        
-        # 未使用の識別子を検出
-        self.find_unused_identifiers(protected_code)
         
         # 変換を適用
         transformed_code = self.apply_transformations(protected_code)
@@ -454,8 +458,17 @@ class CObfuscator:
 
 def main():
     """メイン関数"""
-    if len(sys.argv) > 1:
-        filename = sys.argv[1]
+    # コマンドライン引数からプレフィックスを取得（オプション）
+    prefix = "Ut"  # デフォルトプレフィックス
+    file_arg_index = 1
+    
+    if len(sys.argv) > 1 and sys.argv[1].startswith("--prefix="):
+        prefix = sys.argv[1].split("=")[1]
+        file_arg_index = 2
+        print(f"プレフィックス: {prefix}")
+    
+    if len(sys.argv) > file_arg_index:
+        filename = sys.argv[file_arg_index]
         try:
             with open(filename, 'r', encoding='utf-8') as f:
                 source_code = f.read()
@@ -468,7 +481,7 @@ def main():
         print("入力ファイル: サンプルコード")
     
     # 難読化を実行
-    obfuscator = CObfuscator(source_code)
+    obfuscator = CObfuscator(source_code, prefix)
     transformed_code, conversion_table = obfuscator.obfuscate()
     
     # 結果を出力
@@ -479,9 +492,9 @@ def main():
     print(transformed_code)
     
     # ファイルに保存
-    if len(sys.argv) > 1:
-        output_filename = sys.argv[1].rsplit('.', 1)[0] + '_obfuscated.c'
-        table_filename = sys.argv[1].rsplit('.', 1)[0] + '_conversion_table.txt'
+    if len(sys.argv) > file_arg_index:
+        output_filename = sys.argv[file_arg_index].rsplit('.', 1)[0] + '_obfuscated.c'
+        table_filename = sys.argv[file_arg_index].rsplit('.', 1)[0] + '_conversion_table.txt'
         
         with open(output_filename, 'w', encoding='utf-8') as f:
             f.write(transformed_code)

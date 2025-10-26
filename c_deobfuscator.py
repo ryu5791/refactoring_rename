@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-C言語ソースコードの識別子を変換表に基づいて元に戻すプログラム
+C言語ソースコードの識別子を変換表に基づいて元に戻すプログラム（改良版）
+関数名内の文字列も含めて完全に復元
 """
 
 import re
@@ -13,6 +14,7 @@ class CDeobfuscator:
     def __init__(self, obfuscated_code, conversion_table_file):
         self.obfuscated_code = obfuscated_code
         self.conversion_map = {}  # new_name -> old_name のマッピング
+        self.prefix = "Ut"  # デフォルトプレフィックス
         self.parse_conversion_table(conversion_table_file)
     
     def parse_conversion_table(self, table_file):
@@ -24,9 +26,15 @@ class CDeobfuscator:
             print(f"エラー: 変換表ファイル '{table_file}' を読み込めません: {e}")
             sys.exit(1)
         
+        # プレフィックスを検出
+        prefix_match = re.search(r'プレフィックス:\s*(\w+)', content)
+        if prefix_match:
+            self.prefix = prefix_match.group(1)
+            print(f"検出されたプレフィックス: {self.prefix}")
+        
         # 変換表から識別子のマッピングを抽出
         # 形式: "  old_name                       -> new_name"
-        pattern = r'^\s+(.+?)\s+->\s+([A-Za-z0-9_]+)\s*$'
+        pattern = r'^\s+(.+?)\s+->\s+(' + re.escape(self.prefix) + r'[A-Za-z0-9_]+)\s*$'
         
         for line in content.split('\n'):
             match = re.match(pattern, line)
@@ -42,7 +50,7 @@ class CDeobfuscator:
             print(f"変換表を読み込みました: {len(self.conversion_map)} 件の識別子")
     
     def deobfuscate(self):
-        """逆変換を実行"""
+        """逆変換を実行（関数名内の部分文字列も含めて変換）"""
         result_code = self.obfuscated_code
         
         # 長い名前から順に変換（部分一致を避けるため）
@@ -55,24 +63,42 @@ class CDeobfuscator:
         normal_ids = []
         
         for new_name in sorted_names:
-            # c1, c2, c3... はコメント識別子
-            if new_name.startswith('c') and len(new_name) > 1 and new_name[1:].isdigit():
-                comment_ids.append(new_name)
+            # Utc1, Utc2, Utc3... はコメント識別子
+            if new_name.startswith(f"{self.prefix}c") and len(new_name) > len(self.prefix) + 1:
+                if new_name[len(self.prefix)+1:].isdigit():
+                    comment_ids.append(new_name)
+                else:
+                    normal_ids.append(new_name)
             else:
                 normal_ids.append(new_name)
         
-        # まず通常の識別子を変換
+        # まず通常の識別子を変換（関数名内の部分文字列も含む）
         for new_name in normal_ids:
             old_name = self.conversion_map[new_name]
-            # 単語境界を使用して正確に置換
+            
+            # 方法1: 単語境界での完全一致（通常の識別子）
             result_code = re.sub(r'\b' + re.escape(new_name) + r'\b', 
                                old_name, result_code)
+            
+            # 方法2: 関数名やマクロ名内の部分文字列も変換
+            # 例: my_Utf1_function のような場合
+            # ただし、プレフィックスを含む場合のみ（誤変換を防ぐため）
+            if self.prefix in new_name:
+                # アンダースコアで囲まれた部分
+                result_code = re.sub(r'_' + re.escape(new_name) + r'_', 
+                                   f'_{old_name}_', result_code)
+                # アンダースコアで始まる部分
+                result_code = re.sub(r'_' + re.escape(new_name) + r'\b', 
+                                   f'_{old_name}', result_code)
+                # アンダースコアで終わる部分
+                result_code = re.sub(r'\b' + re.escape(new_name) + r'_', 
+                                   f'{old_name}_', result_code)
         
         # 次にコメント識別子を変換（特別処理）
         for new_name in comment_ids:
             old_name = self.conversion_map[new_name]
             
-            # 単一行コメント: // c1 または // c15
+            # 単一行コメント: // Utc1 または // Utc15
             result_code = re.sub(
                 r'//\s*' + re.escape(new_name) + r'(?=\s*$|\s*\n)',
                 f'// {old_name}',
@@ -80,7 +106,7 @@ class CDeobfuscator:
                 flags=re.MULTILINE
             )
             
-            # 複数行コメント: /* c1 */ または /* c35 */
+            # 複数行コメント: /* Utc1 */ または /* Utc35 */
             result_code = re.sub(
                 r'/\*\s*' + re.escape(new_name) + r'\s*\*/',
                 f'/* {old_name} */',
@@ -93,7 +119,7 @@ class CDeobfuscator:
         """変換サマリーを生成"""
         summary = []
         summary.append("=" * 60)
-        summary.append("逆変換サマリー")
+        summary.append(f"逆変換サマリー (プレフィックス: {self.prefix})")
         summary.append("=" * 60)
         
         # カテゴリ別に分類
@@ -109,21 +135,21 @@ class CDeobfuscator:
         }
         
         for new_name, old_name in sorted(self.conversion_map.items()):
-            if new_name.startswith('D'):
+            if new_name.startswith(f"{self.prefix}D"):
                 categories['マクロ名'].append((new_name, old_name))
-            elif new_name.startswith('e') and len(new_name) > 1 and new_name[1].isdigit():
+            elif new_name.startswith(f"{self.prefix}e") and new_name[len(self.prefix)+1:].isdigit():
                 categories['列挙型名'].append((new_name, old_name))
-            elif new_name.startswith('t'):
+            elif new_name.startswith(f"{self.prefix}t"):
                 categories['構造体名'].append((new_name, old_name))
-            elif new_name.startswith('u'):
+            elif new_name.startswith(f"{self.prefix}u"):
                 categories['共用体名'].append((new_name, old_name))
-            elif new_name.startswith('f'):
+            elif new_name.startswith(f"{self.prefix}f"):
                 categories['関数名'].append((new_name, old_name))
-            elif new_name.startswith('v'):
+            elif new_name.startswith(f"{self.prefix}v"):
                 categories['変数名'].append((new_name, old_name))
-            elif new_name.startswith('c') and len(new_name) > 1 and new_name[1:].isdigit():
+            elif new_name.startswith(f"{self.prefix}c") and new_name[len(self.prefix)+1:].isdigit():
                 categories['コメント'].append((new_name, old_name))
-            elif new_name.startswith('m'):
+            elif new_name.startswith(f"{self.prefix}m"):
                 categories['メンバ名'].append((new_name, old_name))
         
         for category_name, items in categories.items():
@@ -142,13 +168,14 @@ def main():
     """メイン関数"""
     if len(sys.argv) < 2:
         print("使用方法:")
-        print("  python c_deobfuscator.py <難読化されたファイル> [変換表ファイル]")
+        print("  python c_deobfuscator_improved.py <難読化されたファイル> [変換表ファイル]")
         print("")
         print("例:")
-        print("  python c_deobfuscator.py your_code_obfuscated.c")
-        print("  python c_deobfuscator.py your_code_obfuscated.c your_code_conversion_table.txt")
+        print("  python c_deobfuscator_improved.py your_code_obfuscated.c")
+        print("  python c_deobfuscator_improved.py your_code_obfuscated.c your_code_conversion_table.txt")
         print("")
         print("※ 変換表ファイルを指定しない場合、自動的に推測されます")
+        print("※ プレフィックス付きの識別子を完全に復元します（関数名内の部分文字列も含む）")
         sys.exit(1)
     
     obfuscated_file = sys.argv[1]
@@ -185,9 +212,14 @@ def main():
     # 結果を出力
     print("\n" + summary)
     print("\n" + "=" * 60)
-    print("復元されたコード")
+    print("復元されたコード（プレビュー）")
     print("=" * 60)
-    print(restored_code)
+    # 最初の30行だけ表示
+    lines = restored_code.split('\n')
+    for i, line in enumerate(lines[:30]):
+        print(line)
+    if len(lines) > 30:
+        print(f"... (残り {len(lines) - 30} 行)")
     
     # ファイルに保存
     if obfuscated_file.endswith('_obfuscated.c'):
