@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-C言語ソースコードの識別子を系統的に変換するプログラム（改良版）
-プレフィックス「Ut」を追加して誤変換を防ぐ
-同じコメントの重複を正しく処理するよう修正
+C言語ソースコードの識別子を系統的に変換するプログラム（反復処理版）
+取りこぼしがなくなるまで変換を繰り返す
+#if defined(XXX)のXXXも難読化する対応版
 """
 
 import re
@@ -15,6 +15,21 @@ SAMPLE_C_CODE = """
 #define MAX_SIZE 100
 #define PI 3.14159
 #define CALCULATE(x, y) ((x) + (y))
+#define DEBUG_MODE
+
+#ifdef DEBUG_MODE
+#define DEBUG_PRINT(x) printf(x)
+#else
+#define DEBUG_PRINT(x)
+#endif
+
+#ifndef VERSION_MAJOR
+#define VERSION_MAJOR 1
+#endif
+
+#if defined(MAX_SIZE) && defined(PI)
+#define AREA_CALC(r) (PI * (r) * (r))
+#endif
 
 // 列挙型定義
 enum Color {
@@ -124,18 +139,20 @@ int main(void) {
 
 
 class CObfuscator:
-    def __init__(self, source_code, prefix="Ut"):
+    def __init__(self, source_code, prefix="Ut", max_iterations=5):
         self.source_code = source_code
-        self.prefix = prefix  # 誤変換防止用のプレフィックス
+        self.prefix = prefix
+        self.max_iterations = max_iterations
         self.identifiers = {
-            'macro': {},      # UtD1, UtD2, ...
-            'enum': {},       # Ute1, Ute2, ...
-            'struct': {},     # Utt1, Utt2, ...
-            'union': {},      # Utu1, Utu2, ...
-            'function': {},   # Utf1, Utf2, ...
-            'variable': {},   # Utv1, Utv2, ...
-            'member': {},     # Utm1, Utm2, ...
-            'comment': {}     # Utc1, Utc2, ...
+            'macro': {},
+            'enum': {},
+            'struct': {},
+            'union': {},
+            'function': {},
+            'variable': {},
+            'member': {},
+            'comment': {},
+            'other': {}  # その他の識別子用
         }
         self.counters = {
             'macro': 1,
@@ -145,15 +162,14 @@ class CObfuscator:
             'function': 1,
             'variable': 1,
             'member': 1,
-            'comment': 1
+            'comment': 1,
+            'other': 1
         }
         self.used_identifiers = set()
+        self.comment_mappings = []
+        self.directive_macro_placeholders = {}  # ディレクティブ内のマクロ名プレースホルダー
         
-        # コメントIDとコンテンツのマッピング（重複対応）
-        self.comment_id_to_content = {}  # comment_id -> comment_content
-        self.comment_mappings = []  # [(comment_id, comment_content), ...]の順序付きリスト
-        
-        # 変換パターンの定義（プレフィックス付き）
+        # 変換パターンの定義
         self.patterns = {
             'macro': f'{prefix}D',
             'enum': f'{prefix}e',
@@ -162,42 +178,77 @@ class CObfuscator:
             'function': f'{prefix}f',
             'variable': f'{prefix}v',
             'member': f'{prefix}m',
-            'comment': f'{prefix}c'
+            'comment': f'{prefix}c',
+            'other': f'{prefix}x'
         }
         
         # C言語の予約語リスト
         self.c_keywords = {
-            # 型
             'int', 'char', 'short', 'long', 'float', 'double', 'void',
             'signed', 'unsigned', 'uint8_t', 'uint16_t', 'uint32_t', 'uint64_t',
             'int8_t', 'int16_t', 'int32_t', 'int64_t', 'size_t',
-            # 制御構文
             'if', 'else', 'switch', 'case', 'default', 'break', 'continue',
             'for', 'while', 'do', 'goto', 'return',
-            # 記憶クラス
             'auto', 'register', 'static', 'extern', 'typedef',
-            # 修飾子
             'const', 'volatile', 'restrict',
-            # その他
-            'struct', 'union', 'enum', 'sizeof', 'inline',
-            # C99以降
+            'struct', 'union', 'enum', 'sizeof', 'inline', 'true', 'false', 'bool',
             '_Bool', '_Complex', '_Imaginary',
-            # C11以降
             '_Alignas', '_Alignof', '_Atomic', '_Static_assert',
             '_Noreturn', '_Thread_local', '_Generic',
-            # 標準ライブラリ関数（よく使われるもの）
             'printf', 'scanf', 'malloc', 'free', 'memcpy', 'memset',
             'strlen', 'strcpy', 'strcmp', 'strcat', 'sprintf', 'snprintf',
             'fopen', 'fclose', 'fread', 'fwrite', 'fprintf', 'fscanf',
-            'exit', 'NULL',
-            # 特殊な関数
-            'main'  # main関数は変換しない
+            'exit', 'NULL', 'main', 'define', 'ifndef', 'endif', 'include', 'HASH',
+            'defined'  # defined()演算子は予約語として扱う
         }
+    
+    def extract_directive_macros(self, code):
+        """プリプロセッサディレクティブ内のマクロ名を抽出"""
+        directive_macros = set()
+        
+        # まず#defineで定義されているマクロ名を収集
+        defined_macros = set()
+        for match in re.finditer(r'#define\s+([A-Za-z_][A-Za-z0-9_]*)', code):
+            macro_name = match.group(1)
+            if not self.is_reserved_word(macro_name):
+                defined_macros.add(macro_name)
+        
+        # #ifdef MACRO_NAME
+        for match in re.finditer(r'#ifdef\s+([A-Za-z_][A-Za-z0-9_]*)', code):
+            macro_name = match.group(1)
+            if not self.is_reserved_word(macro_name):
+                directive_macros.add(macro_name)
+        
+        # #ifndef MACRO_NAME
+        for match in re.finditer(r'#ifndef\s+([A-Za-z_][A-Za-z0-9_]*)', code):
+            macro_name = match.group(1)
+            if not self.is_reserved_word(macro_name):
+                directive_macros.add(macro_name)
+        
+        # #if, #elif ディレクティブを1行ずつ処理
+        for line_match in re.finditer(r'#(?:if|elif)\b[^\n]*', code):
+            line = line_match.group(0)
+            
+            # defined(MACRO_NAME) または defined MACRO_NAME の形式をすべて抽出
+            for macro_match in re.finditer(r'defined\s*\(?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)?', line):
+                macro_name = macro_match.group(1)
+                if not self.is_reserved_word(macro_name):
+                    directive_macros.add(macro_name)
+            
+            # 条件式内のすべての識別子を抽出（#defineで定義されているものに限定）
+            for identifier_match in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', line):
+                identifier = identifier_match.group(1)
+                # #defineで定義されたマクロ、または既に抽出済みのマクロの場合
+                if identifier in defined_macros and not self.is_reserved_word(identifier):
+                    directive_macros.add(identifier)
+        
+        return directive_macros
         
     def remove_comments_strings_and_directives(self, code):
         """コメント、文字列リテラル、プリプロセッサディレクティブを保護"""
         self.protected = {}
         counter = 0
+        directive_placeholder_counter = 0
         
         def replace_with_placeholder(match, transformed_content=None):
             nonlocal counter
@@ -206,18 +257,62 @@ class CObfuscator:
             counter += 1
             return placeholder
         
-        # 1. プリプロセッサディレクティブを保護（#includeなど、#defineは除く）
-        def protect_include(match):
-            return replace_with_placeholder(match)
+        # まず、ディレクティブ内のマクロ名を抽出（保護する前に）
+        directive_macros = self.extract_directive_macros(code)
         
-        code = re.sub(r'#include\s+[<"][^>"]+[>"]', protect_include, code)
-        code = re.sub(r'#(?:if|ifdef|ifndef|elif|else|endif|pragma|error|warning)\b[^\n]*', protect_include, code)
+        # 抽出したマクロ名をマクロ辞書に登録
+        for macro_name in directive_macros:
+            if macro_name not in self.identifiers['macro'] and not self.is_reserved_word(macro_name):
+                self.identifiers['macro'][macro_name] = f"{self.patterns['macro']}{self.counters['macro']}"
+                self.counters['macro'] += 1
+                self.used_identifiers.add(macro_name)
         
-        # 2. 文字列リテラルを保護
+        # #defineを特殊マーカーに置き換え（識別子として認識されない形式）
+        code = code.replace('#define ', '~HASH~define ')
+        code = code.replace('#define\t', '~HASH~define\t')
+        
+        # #includeを保護
+        code = re.sub(r'#include\s+[<"][^>"]+[>"]', lambda m: replace_with_placeholder(m), code)
+        
+        # プリプロセッサディレクティブを保護（マクロ名をプレースホルダーに置き換えながら）
+        def protect_directive_with_macro(match):
+            nonlocal directive_placeholder_counter
+            directive = match.group(0)
+            
+            # ディレクティブ内のマクロ名をプレースホルダーに置き換え
+            # すべての識別子を検出して、マクロ辞書にあるものを置き換える
+            def replace_macro_in_directive(m):
+                nonlocal directive_placeholder_counter
+                identifier = m.group(0)
+                if identifier in self.identifiers['macro']:
+                    # マクロ名のプレースホルダーを作成
+                    placeholder = f"~MACRO_{directive_placeholder_counter}~"
+                    self.directive_macro_placeholders[placeholder] = identifier
+                    directive_placeholder_counter += 1
+                    return placeholder
+                return identifier
+            
+            # ディレクティブ内の識別子を置き換え
+            transformed_directive = re.sub(
+                r'\b([A-Za-z_][A-Za-z0-9_]*)\b',
+                replace_macro_in_directive,
+                directive
+            )
+            
+            return replace_with_placeholder(match, transformed_directive)
+        
+        # #if, #ifdef, #ifndef, #elif, #else, #endif, #pragma, #error, #warningを保護
+        code = re.sub(
+            r'#(?:if|ifdef|ifndef|elif|else|endif|pragma|error|warning)\b[^\n]*',
+            protect_directive_with_macro,
+            code
+        )
+        
+        # 文字列リテラルを保護
         code = re.sub(r'"(?:[^"\\]|\\.)*"', lambda m: replace_with_placeholder(m), code)
         code = re.sub(r"'(?:[^'\\]|\\.)*'", lambda m: replace_with_placeholder(m), code)
         
-        # 3. コメントを変換して保護
+        # コメントを変換して保護
         def replace_comment(match):
             original_comment = match.group(0)
             
@@ -227,17 +322,9 @@ class CObfuscator:
                 comment_content = original_comment[2:-2].strip()
             
             if comment_content:
-                # 常に新しいIDを生成（同じコメントでも別のIDを付与）
                 comment_id = f"{self.patterns['comment']}{self.counters['comment']}"
-                
-                # コメントIDとコンテンツのマッピングを保存
-                self.comment_id_to_content[comment_id] = comment_content
                 self.comment_mappings.append((comment_id, comment_content))
-                
-                # 後方互換性のため、最後に出現したものをidentifiersに保存
-                # （ただし、generate_conversion_tableでは別の方法を使う）
                 self.identifiers['comment'][comment_content] = comment_id
-                
                 self.counters['comment'] += 1
                 
                 if original_comment.startswith('//'):
@@ -256,8 +343,24 @@ class CObfuscator:
     
     def restore_protected(self, code):
         """保護された部分を復元"""
+        # まず、ディレクティブ内のマクロ名プレースホルダーを難読化後の名前に置き換え
+        for placeholder, original_macro_name in self.directive_macro_placeholders.items():
+            if original_macro_name in self.identifiers['macro']:
+                obfuscated_name = self.identifiers['macro'][original_macro_name]
+                # protectedの中身を置き換え
+                for prot_key in self.protected:
+                    self.protected[prot_key] = self.protected[prot_key].replace(
+                        placeholder,
+                        obfuscated_name
+                    )
+        
+        # 通常の保護された部分を復元
         for placeholder, original in self.protected.items():
             code = code.replace(placeholder, original)
+        
+        # 最後に~HASH~を#に戻す
+        code = code.replace('~HASH~', '#')
+        
         return code
     
     def is_reserved_word(self, name):
@@ -265,17 +368,17 @@ class CObfuscator:
         return name in self.c_keywords
     
     def extract_identifiers(self, code):
-        """識別子を抽出して分類"""
+        """識別子を抽出して分類（1回目のパス）"""
         
-        # 1. マクロ定義を抽出
-        for match in re.finditer(r'#define\s+([A-Za-z_][A-Za-z0-9_]*)', code):
+        # 1. マクロ定義（~HASH~defineの後に続く識別子）
+        for match in re.finditer(r'~HASH~define\s+([A-Za-z_][A-Za-z0-9_]*)', code):
             name = match.group(1)
             if name not in self.identifiers['macro'] and not self.is_reserved_word(name):
                 self.identifiers['macro'][name] = f"{self.patterns['macro']}{self.counters['macro']}"
                 self.counters['macro'] += 1
                 self.used_identifiers.add(name)
         
-        # 2. 列挙型定義を抽出
+        # 2. 列挙型定義
         for match in re.finditer(r'enum\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|;)', code):
             name = match.group(1)
             if name not in self.identifiers['enum'] and not self.is_reserved_word(name):
@@ -283,7 +386,7 @@ class CObfuscator:
                 self.counters['enum'] += 1
                 self.used_identifiers.add(name)
         
-        # 3. 構造体定義を抽出
+        # 3. 構造体定義
         for match in re.finditer(r'struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|;|\*|[^\w])', code):
             name = match.group(1)
             if name not in self.identifiers['struct'] and not self.is_reserved_word(name):
@@ -291,7 +394,7 @@ class CObfuscator:
                 self.counters['struct'] += 1
                 self.used_identifiers.add(name)
         
-        # 4. 共用体定義を抽出
+        # 4. 共用体定義
         for match in re.finditer(r'union\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|;|\*|[^\w])', code):
             name = match.group(1)
             if name not in self.identifiers['union'] and not self.is_reserved_word(name):
@@ -299,7 +402,7 @@ class CObfuscator:
                 self.counters['union'] += 1
                 self.used_identifiers.add(name)
         
-        # 5. 関数定義・宣言を抽出
+        # 5. 関数定義・宣言
         for match in re.finditer(
             r'(?:^|[\n;])\s*(?:static\s+|inline\s+|extern\s+)*'
             r'(?:const\s+|volatile\s+)*'
@@ -315,7 +418,7 @@ class CObfuscator:
                 self.counters['function'] += 1
                 self.used_identifiers.add(name)
         
-        # 6. メンバアクセス（-> と .）で使用されている識別子を最優先で抽出
+        # 6. メンバアクセス（-> と .）
         for match in re.finditer(r'(?:->|\.)\s*([A-Za-z_][A-Za-z0-9_]*)', code):
             name = match.group(1)
             if name not in self.identifiers['member'] and not self.is_reserved_word(name):
@@ -323,11 +426,8 @@ class CObfuscator:
                 self.counters['member'] += 1
                 self.used_identifiers.add(name)
         
-        # 7. 列挙型のメンバ（列挙子）を抽出
-        enum_blocks = re.finditer(
-            r'enum\s+(?:[A-Za-z_][A-Za-z0-9_]*)?\s*\{([^}]+)\}',
-            code, re.DOTALL
-        )
+        # 7. 列挙型のメンバ
+        enum_blocks = re.finditer(r'enum\s+(?:[A-Za-z_][A-Za-z0-9_]*)?\s*\{([^}]+)\}', code, re.DOTALL)
         for block_match in enum_blocks:
             block = block_match.group(1)
             for match in re.finditer(r'([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*[^,}]+)?(?:,|})', block):
@@ -337,7 +437,7 @@ class CObfuscator:
                     self.counters['member'] += 1
                     self.used_identifiers.add(name)
         
-        # 8. 構造体・共用体内のメンバ定義を抽出
+        # 8. 構造体・共用体内のメンバ定義
         struct_union_blocks = re.finditer(
             r'(?:struct|union)\s+(?:[A-Za-z_][A-Za-z0-9_]*)?\s*\{([^}]+)\}',
             code, re.DOTALL
@@ -356,7 +456,7 @@ class CObfuscator:
                     self.counters['member'] += 1
                     self.used_identifiers.add(name)
         
-        # 9. 変数定義を抽出
+        # 9. 変数定義
         variable_patterns = [
             # 関数引数
             r'\(\s*(?:const\s+|volatile\s+)*'
@@ -391,10 +491,7 @@ class CObfuscator:
                     self.used_identifiers.add(name)
         
         # 10. forループ内の変数
-        for match in re.finditer(
-            r'for\s*\(\s*(?:int|uint\d+_t|size_t)\s+([A-Za-z_][A-Za-z0-9_]*)',
-            code
-        ):
+        for match in re.finditer(r'for\s*\(\s*(?:int|uint\d+_t|size_t)\s+([A-Za-z_][A-Za-z0-9_]*)', code):
             name = match.group(1)
             if (name not in self.identifiers['variable'] and
                 name not in self.identifiers['member'] and
@@ -403,25 +500,54 @@ class CObfuscator:
                 self.counters['variable'] += 1
                 self.used_identifiers.add(name)
     
+    def find_unconverted_identifiers(self, code):
+        """未変換の識別子を検出（2回目以降のパス）"""
+        # すべての識別子を抽出
+        all_identifiers = set(re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', code))
+        
+        # 未変換の識別子を検出
+        unconverted = []
+        for identifier in all_identifiers:
+            # 予約語でない、プレフィックス付きでない、既に変換マップにない
+            if (not self.is_reserved_word(identifier) and
+                not identifier.startswith(self.prefix) and
+                not identifier.startswith('__PROTECTED_') and
+                not identifier.startswith('~MACRO_') and
+                identifier not in self.used_identifiers):
+                unconverted.append(identifier)
+        
+        return unconverted
+    
+    def add_identifier(self, name, category='other'):
+        """識別子を追加"""
+        if category not in self.identifiers:
+            category = 'other'
+        
+        if name not in self.identifiers[category]:
+            new_id = f"{self.patterns[category]}{self.counters[category]}"
+            self.identifiers[category][name] = new_id
+            self.counters[category] += 1
+            self.used_identifiers.add(name)
+            return new_id
+        return self.identifiers[category][name]
+    
     def apply_transformations(self, code):
-        """変換を適用（単語境界を使用せず、すべての出現箇所を変換）"""
-        # 長い名前から順に変換（部分一致を避けるため）
+        """変換を適用"""
+        # すべての識別子を長さ順にソート
         all_items = []
-        for category in ['macro', 'enum', 'struct', 'union', 'function', 'member', 'variable']:
+        for category in ['macro', 'enum', 'struct', 'union', 'function', 'member', 'variable', 'other']:
             for old_name, new_name in self.identifiers[category].items():
                 all_items.append((old_name, new_name, len(old_name)))
         
-        # 長さの降順でソート
         all_items.sort(key=lambda x: x[2], reverse=True)
         
         for old_name, new_name, _ in all_items:
-            # 単語境界を使用した置換（独立した識別子）
             code = re.sub(r'\b' + re.escape(old_name) + r'\b', new_name, code)
         
         return code
     
     def generate_conversion_table(self):
-        """変換表を生成（重複するコメントも含めてすべて表示）"""
+        """変換表を生成"""
         table = []
         table.append("=" * 60)
         table.append(f"識別子変換表 (プレフィックス: {self.prefix})")
@@ -435,6 +561,7 @@ class CObfuscator:
             ('関数名', 'function'),
             ('変数名', 'variable'),
             ('メンバ名', 'member'),
+            ('その他', 'other'),
         ]
         
         total_count = 0
@@ -445,10 +572,8 @@ class CObfuscator:
                     table.append(f"  {old_name:30s} -> {new_name}")
                     total_count += 1
         
-        # コメントは別扱い（重複も含めてすべて表示）
         if self.comment_mappings:
             table.append(f"\n【コメント】")
-            # 重複を考慮して、すべてのコメントマッピングを表示
             seen_pairs = set()
             for comment_id, comment_content in self.comment_mappings:
                 pair = (comment_content, comment_id)
@@ -462,15 +587,52 @@ class CObfuscator:
         return "\n".join(table)
     
     def obfuscate(self):
-        """難読化を実行"""
+        """難読化を実行（反復処理）"""
+        print("\n" + "=" * 60)
+        print("難読化処理開始（反復モード + ディレクティブ対応）")
+        print("=" * 60)
+        
         # コメント、文字列、ディレクティブを保護
         protected_code = self.remove_comments_strings_and_directives(self.source_code)
         
-        # 識別子を抽出
+        # 1回目のパス: 通常の識別子抽出
+        print("\n[パス 1] 通常の識別子抽出...")
         self.extract_identifiers(protected_code)
+        initial_count = len(self.used_identifiers)
+        print(f"  → {initial_count} 個の識別子を検出")
         
         # 変換を適用
         transformed_code = self.apply_transformations(protected_code)
+        
+        # 2回目以降のパス: 未変換の識別子を検出して変換
+        iteration = 2
+        while iteration <= self.max_iterations:
+            print(f"\n[パス {iteration}] 未変換識別子の検出...")
+            
+            # 未変換の識別子を検出
+            unconverted = self.find_unconverted_identifiers(transformed_code)
+            
+            if not unconverted:
+                print("  → 未変換の識別子はありません")
+                break
+            
+            print(f"  → {len(unconverted)} 個の未変換識別子を検出")
+            print(f"     例: {', '.join(list(unconverted)[:5])}")
+            
+            # 未変換の識別子を「その他」カテゴリとして追加
+            for identifier in unconverted:
+                self.add_identifier(identifier, 'other')
+            
+            # 再度変換を適用
+            transformed_code = self.apply_transformations(protected_code)
+            iteration += 1
+        
+        if iteration > self.max_iterations:
+            print(f"\n[警告] 最大反復回数({self.max_iterations})に達しました")
+            remaining = self.find_unconverted_identifiers(transformed_code)
+            if remaining:
+                print(f"  残りの未変換識別子: {len(remaining)} 個")
+                print(f"  例: {', '.join(list(remaining)[:10])}")
         
         # 保護された部分を復元
         result_code = self.restore_protected(transformed_code)
@@ -478,19 +640,33 @@ class CObfuscator:
         # 変換表を生成
         conversion_table = self.generate_conversion_table()
         
+        print(f"\n最終結果: {len(self.used_identifiers)} 個の識別子を変換")
+        print("=" * 60)
+        
         return result_code, conversion_table
 
 
 def main():
     """メイン関数"""
-    # コマンドライン引数からプレフィックスを取得（オプション）
-    prefix = "Ut"  # デフォルトプレフィックス
+    prefix = "Ut"
+    max_iterations = 5
     file_arg_index = 1
     
-    if len(sys.argv) > 1 and sys.argv[1].startswith("--prefix="):
-        prefix = sys.argv[1].split("=")[1]
-        file_arg_index = 2
-        print(f"プレフィックス: {prefix}")
+    # コマンドライン引数の解析
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i].startswith("--prefix="):
+            prefix = sys.argv[i].split("=")[1]
+            print(f"プレフィックス: {prefix}")
+            file_arg_index += 1
+            i += 1
+        elif sys.argv[i].startswith("--max-iterations="):
+            max_iterations = int(sys.argv[i].split("=")[1])
+            print(f"最大反復回数: {max_iterations}")
+            file_arg_index += 1
+            i += 1
+        else:
+            break
     
     if len(sys.argv) > file_arg_index:
         filename = sys.argv[file_arg_index]
@@ -506,15 +682,19 @@ def main():
         print("入力ファイル: サンプルコード")
     
     # 難読化を実行
-    obfuscator = CObfuscator(source_code, prefix)
+    obfuscator = CObfuscator(source_code, prefix, max_iterations)
     transformed_code, conversion_table = obfuscator.obfuscate()
     
     # 結果を出力
     print("\n" + conversion_table)
     print("\n" + "=" * 60)
-    print("変換後のコード")
+    print("変換後のコード（プレビュー - 最初の50行）")
     print("=" * 60)
-    print(transformed_code)
+    lines = transformed_code.split('\n')
+    for i, line in enumerate(lines[:50]):
+        print(line)
+    if len(lines) > 50:
+        print(f"... (残り {len(lines) - 50} 行)")
     
     # ファイルに保存
     if len(sys.argv) > file_arg_index:
