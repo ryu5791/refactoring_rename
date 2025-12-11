@@ -199,7 +199,7 @@ class CObfuscator:
             'strlen', 'strcpy', 'strcmp', 'strcat', 'sprintf', 'snprintf',
             'fopen', 'fclose', 'fread', 'fwrite', 'fprintf', 'fscanf',
             'exit', 'NULL', 'main', 'define', 'ifndef', 'endif', 'include', 'HASH',
-            'bool','true','false',
+            'abs','UCHAR_MAX',
             'defined'  # defined()演算子は予約語として扱う
         }
     
